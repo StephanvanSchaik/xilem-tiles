@@ -1,0 +1,10 @@
+[package]
+name = "xilem-tiles"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+masonry = { git = "https://github.com/linebender/xilem", rev = "7c555d4" }
+masonry_winit = { git = "https://github.com/linebender/xilem", rev = "7c555d4" }
+winit = "0.30"
+xilem = { git = "https://github.com/linebender/xilem", rev = "7c555d4" }
