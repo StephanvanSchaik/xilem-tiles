@@ -141,7 +141,7 @@ fn hello_view(
                 split_vertically,
                 close,
             ))
-            .gap(0.0)
+            .gap(5.0)
             .direction(Axis::Horizontal)
             .main_axis_alignment(MainAxisAlignment::Start),
             sized_box(label("Hello!")).expand_height().flex(1.0),
