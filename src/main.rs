@@ -1,11 +1,11 @@
 use masonry::properties::Background;
+use std::collections::HashMap;
 use std::sync::Arc;
 use winit::error::EventLoopError;
-use xilem::core::lens;
 use xilem::style::Style;
 use xilem::view::{
-    Axis, FlexExt as _, FlexSpacer, MainAxisAlignment, SizedBox, button, flex,
-    label, sized_box, split,
+    Axis, FlexExt as _, FlexSpacer, MainAxisAlignment, SizedBox, button, flex, label, sized_box,
+    split,
 };
 use xilem::{AnyWidgetView, AppState, Color, EventLoop, WidgetView, WindowOptions, Xilem};
 
@@ -20,44 +20,65 @@ where
         .padding(10.0)
 }
 
-#[derive(Clone, Debug)]
-struct SplitState {
-    lhs: Box<PanelState>,
-    rhs: Box<PanelState>,
-    axis: Axis,
-}
-
-#[derive(Clone, Debug)]
-struct HelloState {
-    id: usize,
-    close_requested: bool,
-}
-
-#[derive(Clone, Debug)]
-enum PanelState {
-    Split(SplitState),
-    Hello(HelloState),
-}
-
 #[derive(Debug)]
-struct State {
-    panel: Option<Box<PanelState>>,
+enum PanelState {
+    Split { lhs: usize, rhs: usize, axis: Axis },
+    Hello,
 }
 
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            panel: Some(Box::new(PanelState::Split(SplitState {
-                lhs: Box::new(PanelState::Hello(HelloState {
-                    id: 1,
-                    close_requested: false,
-                })),
-                rhs: Box::new(PanelState::Hello(HelloState {
-                    id: 2,
-                    close_requested: false,
-                })),
-                axis: Axis::Horizontal,
-            }))),
+#[derive(Debug, Default)]
+struct State {
+    panels: HashMap<usize, PanelState>,
+    panel_id: usize,
+}
+
+impl State {
+    fn split(&mut self, id: usize, axis: Axis) {
+        // Take out the state of the original ID, which we are going to replace with the split to
+        // preserve the root ID.
+        let original_state = self.panels.remove(&id).unwrap();
+
+        // Create the left-hand side panel with the original state.
+        let lhs = self.panel_id;
+        self.panel_id += 1;
+        self.panels.insert(lhs, original_state);
+
+        // Create the right-hand panel with the new state.
+        let rhs = self.panel_id;
+        self.panel_id += 1;
+        self.panels.insert(rhs, PanelState::Hello);
+
+        // Re-use the original ID to create the split referenceing the left-hand and right-hand
+        // sides.
+        self.panels.insert(id, PanelState::Split { lhs, rhs, axis });
+    }
+
+    fn close(&mut self, parent_id: Option<usize>, id: usize) {
+        if let Some(parent_id) = parent_id {
+            // Remove the original split.
+            let Some(PanelState::Split { lhs, rhs, .. }) = self.panels.remove(&parent_id) else {
+                return;
+            };
+
+            // Remove the original view.
+            let remaining_state = if lhs == id {
+                self.panels.remove(&lhs);
+                self.panels.remove(&rhs)
+            } else if rhs == id {
+                self.panels.remove(&rhs);
+                self.panels.remove(&lhs)
+            } else {
+                return;
+            };
+
+            let Some(remaining_state) = remaining_state else {
+                return;
+            };
+
+            // Replace the split with the remaining view.
+            self.panels.insert(parent_id, remaining_state);
+        } else {
+            self.panels.clear();
         }
     }
 }
@@ -68,103 +89,89 @@ impl AppState for State {
     }
 }
 
-fn split_view(state: &mut SplitState) -> Arc<AnyWidgetView<SplitState>> {
-    let lhs = lens(panel_view, state, |state: &mut SplitState| &mut state.lhs);
-    let rhs = lens(panel_view, state, |state: &mut SplitState| &mut state.rhs);
+fn split_view(
+    state: &mut State,
+    _parent_id: Option<usize>,
+    id: usize,
+) -> Option<Arc<AnyWidgetView<State>>> {
+    let Some(PanelState::Split { lhs, rhs, axis }) = state.panels.get(&id) else {
+        return None;
+    };
 
-    let split = split(lhs, rhs)
-        .split_axis(state.axis)
+    let lhs = *lhs;
+    let rhs = *rhs;
+    let axis = *axis;
+
+    let lhs = panel_view(state, Some(id), lhs);
+    let rhs = panel_view(state, Some(id), rhs);
+
+    let split = split(flex(lhs), flex(rhs))
+        .split_axis(axis)
         .solid_bar(true)
         .bar_size(0.0);
 
-    Arc::new(split)
+    Some(Arc::new(split))
 }
 
-fn hello_view(state: &mut HelloState) -> Arc<AnyWidgetView<HelloState>> {
-    let title = label(format!("Hello {}", state.id));
+fn hello_view(
+    state: &mut State,
+    parent_id: Option<usize>,
+    id: usize,
+) -> Option<Arc<AnyWidgetView<State>>> {
+    let Some(PanelState::Hello) = state.panels.get(&id) else {
+        return None;
+    };
 
-    let close = button("X", |state: &mut HelloState| {
-        state.close_requested = true;
+    let title = label(format!("Hello {}", id));
+
+    let split_horizontally = button("H", move |state: &mut State| {
+        state.split(id, Axis::Horizontal)
     });
+    let split_vertically = button("V", move |state: &mut State| {
+        state.split(id, Axis::Vertical)
+    });
+    let close = button("X", move |state: &mut State| state.close(parent_id, id));
 
     let panel = panel(
         flex((
-            flex((title, FlexSpacer::Flex(1.0), close))
-                .gap(0.0)
-                .direction(Axis::Horizontal)
-                .main_axis_alignment(MainAxisAlignment::Start),
+            flex((
+                title,
+                FlexSpacer::Flex(1.0),
+                split_horizontally,
+                split_vertically,
+                close,
+            ))
+            .gap(0.0)
+            .direction(Axis::Horizontal)
+            .main_axis_alignment(MainAxisAlignment::Start),
             sized_box(label("Hello!")).expand_height().flex(1.0),
         ))
         .direction(Axis::Vertical)
         .gap(10.0),
     );
 
-    Arc::new(panel)
+    Some(Arc::new(panel))
 }
 
-fn panel_view(state: &mut Box<PanelState>) -> Arc<AnyWidgetView<Box<PanelState>>> {
-    match &mut **state {
-        PanelState::Split(..) => {
-            Arc::new(lens(split_view, state, |state: &mut Box<PanelState>| {
-                let PanelState::Split(state) = &mut **state else {
-                    panic!("underlying view is not Split");
-                };
-
-                state
-            }))
-        }
-        PanelState::Hello(..) => {
-            Arc::new(lens(hello_view, state, |state: &mut Box<PanelState>| {
-                let PanelState::Hello(hello) = &mut **state else {
-                    panic!("underlying view is not Hello");
-                };
-
-                hello
-            }))
-        }
-    }
-}
-
-fn close_panels(state: Box<PanelState>) -> Option<Box<PanelState>> {
-    let close_requested = match &*state {
-        PanelState::Hello(state) => state.close_requested,
-        _ => false,
-    };
-
-    if close_requested {
-        return None;
-    }
-
-    let PanelState::Split(SplitState { lhs, rhs, axis }) = *state else {
-        return Some(state);
-    };
-
-    let lhs = close_panels(lhs);
-    let rhs = close_panels(rhs);
-
-    match (lhs, rhs) {
-        (Some(lhs), Some(rhs)) => Some(Box::new(PanelState::Split(SplitState { lhs, rhs, axis }))),
-        (Some(lhs), _) => Some(lhs),
-        (_, Some(rhs)) => Some(rhs),
-        (_, _) => None,
+fn panel_view(
+    state: &mut State,
+    parent_id: Option<usize>,
+    id: usize,
+) -> Option<Arc<AnyWidgetView<State>>> {
+    match state.panels.get(&id)? {
+        PanelState::Split { .. } => split_view(state, parent_id, id),
+        PanelState::Hello => hello_view(state, parent_id, id),
     }
 }
 
 fn app_logic(state: &mut State) -> impl WidgetView<State> + use<> {
-    if let Some(panel) = &state.panel {
-        state.panel = close_panels(panel.clone());
+    // If there are no empty, create a default panel.
+    if state.panels.is_empty() {
+        state.panels.insert(0, PanelState::Hello);
+        state.panel_id = 1;
     }
 
-    let inner = if state.panel.is_some() {
-        Some(
-            lens(panel_view, state, |state: &mut State| {
-                state.panel.as_mut().unwrap()
-            })
-            .flex(1.0),
-        )
-    } else {
-        None
-    };
+    let inner = panel_view(state, None, 0);
 
     sized_box(flex(inner)).padding(10.0)
 }
